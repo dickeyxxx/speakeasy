@@ -3,41 +3,58 @@
 package speakeasy
 
 import (
-	"os"
 	"syscall"
+	"unicode/utf16"
+	"unsafe"
 )
 
-// SetConsoleMode function can be used to change value of ENABLE_ECHO_INPUT:
-// http://msdn.microsoft.com/en-us/library/windows/desktop/ms686033(v=vs.85).aspx
-const ENABLE_ECHO_INPUT = 0x0004
-
-func getPassword() (password string, err error) {
-	hStdin := syscall.Handle(os.Stdin.Fd())
-	var oldMode uint32
-
-	err = syscall.GetConsoleMode(hStdin, &oldMode)
-	if err != nil {
-		return
+func getPassword() (string, error) {
+	pass := []byte{}
+	for {
+		if v := getch(); v == 127 || v == 8 {
+			if l := len(pass); l > 0 {
+				pass = pass[:l-1]
+			}
+		} else if v == 13 || v == 10 {
+			break
+		} else if v != 0 {
+			pass = append(pass, v)
+		}
 	}
-
-	var newMode uint32 = (oldMode &^ ENABLE_ECHO_INPUT)
-
-	err = setConsoleMode(hStdin, newMode)
-	defer setConsoleMode(hStdin, oldMode)
-	if err != nil {
-		return
-	}
-
-	return readline()
+	println()
+	return string(pass), nil
 }
 
-func setConsoleMode(console syscall.Handle, mode uint32) (err error) {
-	dll := syscall.MustLoadDLL("kernel32")
-	proc := dll.MustFindProc("SetConsoleMode")
-	r, _, err := proc.Call(uintptr(console), uintptr(mode))
+func getch() byte {
+	modkernel32 := syscall.NewLazyDLL("kernel32.dll")
+	procReadConsole := modkernel32.NewProc("ReadConsoleW")
+	procGetConsoleMode := modkernel32.NewProc("GetConsoleMode")
+	procSetConsoleMode := modkernel32.NewProc("SetConsoleMode")
 
-	if r == 0 {
-		return err
+	var mode uint32
+	pMode := &mode
+	procGetConsoleMode.Call(uintptr(syscall.Stdin), uintptr(unsafe.Pointer(pMode)))
+
+	var echoMode, lineMode uint32
+	echoMode = 4
+	lineMode = 2
+	var newMode uint32
+	newMode = mode ^ (echoMode | lineMode)
+
+	procSetConsoleMode.Call(uintptr(syscall.Stdin), uintptr(newMode))
+
+	line := make([]uint16, 1)
+	pLine := &line[0]
+	var n uint16
+	procReadConsole.Call(uintptr(syscall.Stdin), uintptr(unsafe.Pointer(pLine)), uintptr(len(line)), uintptr(unsafe.Pointer(&n)))
+
+	b := []byte(string(utf16.Decode(line)))
+
+	procSetConsoleMode.Call(uintptr(syscall.Stdin), uintptr(mode))
+
+	// Not sure how this could happen, but it did for someone
+	if len(b) > 0 {
+		return b[0]
 	}
-	return nil
+	return 13
 }
